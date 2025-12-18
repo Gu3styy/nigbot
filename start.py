@@ -210,7 +210,3 @@ if not token:
     print("Error: DISCORD_BOT_TOKEN not found. Please add it to Secrets.")
 else:
     bot.run(token)
-
-.env
-__pycache__/
-*.pyc
