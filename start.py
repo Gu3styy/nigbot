@@ -63,7 +63,6 @@ async def duplicate_channel(ch: discord.abc.GuildChannel):
     else:
         return None
 
-    # Keep the same position in category
     await clone.edit(position=ch.position)
     return clone
 
@@ -74,7 +73,6 @@ async def nuke_guild(guild: discord.Guild, auto=False):
     to_delete = []
     old_to_new = {}
 
-    # Step 1 — Duplicate all non-safe channels
     for ch in guild.channels:
         if ch.id in SAFE_CHANNEL_IDS:
             print(f"[DEBUG] Skipping safe: {ch.name}")
@@ -87,7 +85,6 @@ async def nuke_guild(guild: discord.Guild, auto=False):
             to_delete.append(ch)
         await asyncio.sleep(0.8)
 
-    # Step 2 — Delete old channels
     for ch in to_delete:
         print(f"[DEBUG] Deleting old: {ch.name}")
         try:
@@ -96,7 +93,6 @@ async def nuke_guild(guild: discord.Guild, auto=False):
             pass
         await asyncio.sleep(0.8)
 
-    # Step 3 — Send a fun message + GIF to nuked channels
     GIF_URL = "https://cdn.discordapp.com/attachments/1253256583132217348/1390853665535033434/togif.gif?ex=6942a3aa&is=6941522a&hm=a0bfac54b6a4816a6a1023dca30054ce478a003c7087319f896dc4678362331d&"  # example explosion GIF
     MESSAGE = "_ _"
 
@@ -109,7 +105,6 @@ async def nuke_guild(guild: discord.Guild, auto=False):
                 pass
         await asyncio.sleep(0.5)
 
-    # Step 4 — Log
     if log_channel:
         await log_channel.send(
             f"💥 **Server Nuked** ({'AUTO' if auto else 'MANUAL'})\n"
@@ -134,7 +129,6 @@ async def daily_nuke():
             await nuke_guild(guild, auto=True)
 
 
-# -------------------- SLASH COMMANDS -------------------- #
 
 FUNNY_MESSAGES = [
     "U TRYNA NUKE MY SERVER SON?", "NAH BRO WHO GAVE YOU PERMISSION 💀"
